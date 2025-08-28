@@ -1,0 +1,18 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.env
+
+# Data / Models (원하면 LFS로 관리)
+dataset/
+models/*.h5
+models/*.pt
+models/*.onnx
+*.mp4
+*.mov
+*.zip
+
+# VS Code
+.vscode/

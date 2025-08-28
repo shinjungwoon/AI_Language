@@ -4,7 +4,7 @@ import mediapipe as mp
 import numpy as np
 import tensorflow as tf
 import modules.holistic_module as hm
-from tensorflow.keras.models import load_model
+from tensorflow.keras.models import load_model # 알고리즘
 import math
 import os
 from PIL import ImageFont, ImageDraw, Image
