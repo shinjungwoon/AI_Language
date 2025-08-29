@@ -3,7 +3,7 @@ import json
 import asyncio
 import logging
 import traceback
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import numpy as np
 import websockets  # pip install websockets
@@ -24,7 +24,7 @@ ROOM     = os.getenv("ROOM", "")
 # 모델 경로
 DEFAULT_TFLITE = os.getenv(
     "TFLITE_PATH",
-    "/AI_Language/models/multi_hand_gesture_classifier.tflite"
+    "/models/multi_hand_gesture_classifier.tflite"
 )
 
 # (선택) 라벨
