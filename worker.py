@@ -24,7 +24,7 @@ ROOM     = os.getenv("ROOM", "")
 # 모델 경로
 DEFAULT_TFLITE = os.getenv(
     "TFLITE_PATH",
-    "/models/multi_hand_gesture_classifier.tflite"
+    "/ai/AI_Language/models/multi_hand_gesture_classifier.tflite"
 )
 
 # (선택) 라벨
