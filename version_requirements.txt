@@ -1,5 +1,5 @@
-tensorflow==2.4.0
-sklearn
-numpy
+tflite-runtime==2.14.0
+numpy==1.26.4   
 opencv-python
 mediapipe
+websockets==12.0
