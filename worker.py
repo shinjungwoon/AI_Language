@@ -56,7 +56,7 @@ class GestureClassifier:
         self.output_details = self.interp.get_output_details()
         in0 = self.input_details[0]["shape"]
         out0 = self.output_details[0]["shape"]
-        logging.info(f"[worker] TFLite input shape: {in0}, output shape: {out0}")
+        logger.info(f"[worker] TFLite input shape: {in0}, output shape: {out0}")
 
     @staticmethod
     def _fix_length_21(points: List[Dict[str, float]]) -> List[Dict[str, float]]:
@@ -132,11 +132,11 @@ class GestureClassifier:
 
 async def run_worker():
     try:
-        logging.info("모델 로드 시작")
+        logger.info("모델 로드 시작")
         clf = GestureClassifier(DEFAULT_TFLITE)
-        logging.info("모델 로드 완료")
+        logger.info("모델 로드 완료")
     except Exception:
-        logging.error("모델 로드 실패:\n%s", traceback.format_exc())
+        logger.error("모델 로드 실패:\n%s", traceback.format_exc())
         raise
 
     # 쿼리스트링 구성
@@ -151,14 +151,14 @@ async def run_worker():
     backoff = 1
     while True:
         try:
-            logging.info(f"서버 접속 시도 {url}")
+            logger.info(f"서버 접속 시도 {url}")
             async with websockets.connect(
                 url,
                 max_size=10 * 1024 * 1024,
                 ping_interval=20,
                 ping_timeout=20,
             ) as ws:
-                logging.info("서버 접속 완료")
+                logger.info("서버 접속 완료")  # 영통 전에 되는거. 됨 
                 backoff = 1
 
                 while True:
@@ -202,9 +202,9 @@ async def run_worker():
                         logging.error("번역 실패:\n%s", traceback.format_exc())
 
         except (websockets.ConnectionClosed, ConnectionRefusedError) as e:
-            logging.warning(f"서버 연결 끊김: {e}. {backoff}초 후 재시도")
+            logger.warning(f"서버 연결 끊김: {e}. {backoff}초 후 재시도")
         except Exception:
-            logging.error("알 수 없는 오류:\n%s", traceback.format_exc())
+            logger.error("알 수 없는 오류:\n%s", traceback.format_exc())
 
         await asyncio.sleep(backoff)
         backoff = min(backoff * 2, 10)
