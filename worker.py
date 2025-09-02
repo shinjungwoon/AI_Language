@@ -8,6 +8,13 @@ from typing import Any, Dict, List
 import numpy as np
 import websockets  # pip install websockets
 
+# ---- 로깅 설정 ----
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
 # ---- TensorFlow Lite Interpreter (tensorflow or tflite-runtime 중 하나만 사용) ----
 try:
     import tensorflow as tf
@@ -124,13 +131,12 @@ class GestureClassifier:
 
 
 async def run_worker():
-    logging.basicConfig(level=logging.INFO)
-    # 모델 로드
     try:
+        logging.info("모델 로드 시작")
         clf = GestureClassifier(DEFAULT_TFLITE)
-        logging.info("[worker] Model loaded.")
+        logging.info("모델 로드 완료")
     except Exception:
-        logging.error("[worker] Model load failed:\n%s", traceback.format_exc())
+        logging.error("모델 로드 실패:\n%s", traceback.format_exc())
         raise
 
     # 쿼리스트링 구성
@@ -145,20 +151,19 @@ async def run_worker():
     backoff = 1
     while True:
         try:
-            logging.info(f"[worker] connecting to {url}")
+            logging.info(f"서버 접속 시도 {url}")
             async with websockets.connect(
                 url,
                 max_size=10 * 1024 * 1024,
                 ping_interval=20,
                 ping_timeout=20,
             ) as ws:
-                logging.info("[worker] connected.")
+                logging.info("서버 접속 완료")
                 backoff = 1
 
                 while True:
                     msg = await ws.recv()  # str(JSON) or bytes
                     if not isinstance(msg, str):
-                        # (옵션) 프레임 바이트 수신 모드: 현재는 미사용
                         continue
 
                     # JSON 메시지 파싱
@@ -192,13 +197,14 @@ async def run_worker():
                             "room_id": data.get("room_id"),
                         }
                         await ws.send(json.dumps(out))
+                        logger.info(f"번역 완료 → {out['text']} (score={out['score']:.2f})")
                     except Exception:
-                        logging.error("[worker] infer error:\n%s", traceback.format_exc())
+                        logging.error("번역 실패:\n%s", traceback.format_exc())
 
         except (websockets.ConnectionClosed, ConnectionRefusedError) as e:
-            logging.warning(f"[worker] disconnected: {e}. retry in {backoff}s")
+            logging.warning(f"서버 연결 끊김: {e}. {backoff}초 후 재시도")
         except Exception:
-            logging.error("[worker] error:\n%s", traceback.format_exc())
+            logging.error("알 수 없는 오류:\n%s", traceback.format_exc())
 
         await asyncio.sleep(backoff)
         backoff = min(backoff * 2, 10)
@@ -208,4 +214,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(run_worker())
     except KeyboardInterrupt:
-        pass
+        logger.info("worker.py 종료")
