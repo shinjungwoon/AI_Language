@@ -21,6 +21,8 @@ AI_TOKEN = os.getenv("AI_TOKEN", "changeme")
 ROLE     = os.getenv("ROLE", "ai")
 ROOM     = os.getenv("ROOM", "")
 
+ws_url = f"{WS_URL}?role={ROLE}&room={ROOM}"
+
 # 모델 경로
 DEFAULT_TFLITE = os.getenv(
     "TFLITE_PATH",
@@ -137,8 +139,7 @@ async def run_worker():
         qs.append(f"token={AI_TOKEN}")
     if ROLE:
         qs.append(f"role={ROLE}")
-    if ROOM:
-        qs.append(f"room={ROOM}")
+
     url = WS_URL + (("?" + "&".join(qs)) if qs else "")
 
     backoff = 1
