@@ -226,8 +226,9 @@ import json
 import asyncio
 import logging
 import traceback
-from typing import Any, Dict, List
-
+from typing import Any, Dict, List, Tuple
+import time
+import uuid
 import numpy as np
 import websockets  # pip install websockets
 
@@ -394,7 +395,36 @@ async def run_worker():
 
         await asyncio.sleep(backoff)
         backoff = min(backoff * 2, 10)
+async def recognize_sign(payload: Dict[str, Any]) -> Tuple[str, float]:
+    """
+    수어 인식 → 원문 텍스트와 신뢰도(score)를 반환
+    """
+    return payload.get("text") or "[recognized]", 0.9
 
+async def translate_text(text: str) -> str:
+    """
+    번역 수행 (현재는 그대로 반환)
+    """
+    return text
+
+async def handle_frame(frame_payload: Dict[str, Any]) -> Dict[str, Any]:
+    """FastAPI에서 받은 메시지 처리"""
+    corr_id = frame_payload.get("corr_id") or str(uuid.uuid4())
+    t0 = time.time()
+
+    recognized, score = await recognize_sign(frame_payload)
+    translated = await translate_text(recognized)
+
+    ms = int((time.time() - t0) * 1000)
+    log.info({
+        "event": "inference",
+        "corr_id": corr_id,
+        "origin": recognized,
+        "translated": translated,
+        "ms": ms,
+        "score": score,
+    })
+    return {"corr_id": corr_id, "text": translated, "score": score}
 
 if __name__ == "__main__":
     asyncio.run(run_worker())
