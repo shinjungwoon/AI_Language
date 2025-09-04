@@ -21,7 +21,7 @@ import websockets  # pip install websockets
 # 서버(웹소켓) 연결 정보
 WS_URI = os.getenv(
     "WS_URI",
-    "ws://ai:8001/ai?token=change-me-dev&role=ai&room=debug"  # 로컬 테스트
+    "ws://ai:8001/ai?token=change-me-dev&role=client&room=debug"  # 로컬 테스트
 )
 WS_ORIGIN = {"Origin": os.getenv("WS_ORIGIN", "https://5range.site")}  # Origin 체크 시 필요
 
