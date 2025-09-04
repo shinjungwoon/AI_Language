@@ -1,4 +1,5 @@
 import sys
+import os   
 # sys.path.append('pingpong')
 # from pingpong.pingpongthread import PingPongThread
 import cv2
@@ -12,6 +13,42 @@ from modules.utils import Vector_Normalization
 from PIL import ImageFont, ImageDraw, Image
 from collections import deque
 from unicode import join_jamos
+
+# <<< ADDED: WebSocket 송신을 위한 모듈/상수/헬퍼 >>>
+import asyncio, json, uuid
+import websockets  # pip install websockets
+
+# 서버(웹소켓) 연결 정보
+WS_URI = os.getenv(
+    "WS_URI",
+    "ws://localhost:8001/ai?token=change-me-dev&role=ai&room=debug"  # 로컬 테스트
+)
+WS_ORIGIN = {"Origin": os.getenv("WS_ORIGIN", "https://5range.site")}  # Origin 체크 시 필요
+
+def _extract_21(hand):
+    """MediaPipe hand → 21개 (x,y,z) dict 리스트로 변환"""
+    return [{"x": float(lm.x), "y": float(lm.y), "z": float(getattr(lm, "z", 0.0))}
+            for lm in hand.landmark[:21]]
+
+async def _send_coords(ws, l_hand, r_hand, room_id="debug", frame_id=None):
+    """좌표 payload를 websockets.py로 전송"""
+    hands = []
+    if l_hand is not None:
+        hands.append(_extract_21(l_hand))
+    if r_hand is not None:
+        hands.append(_extract_21(r_hand))
+    if not hands:
+        return
+    msg = {
+        "type": "coords",
+        "room_id": room_id,
+        "corr_id": str(uuid.uuid4()),
+        "hands": hands,
+    }
+    if frame_id is not None:
+        msg["frame_id"] = frame_id
+    await ws.send(json.dumps(msg))
+# <<< ADDED 끝 >>>
 
 BIMANUAL_ORDER = "left_to_right"
 
@@ -274,24 +311,19 @@ font = get_font()
 # =========================
 detector = hm.HolisticDetector(min_detection_confidence=0.3)
 
-from pathlib import Path
+from pathlib import Path, PurePath
 BASE_DIR = Path(__file__).resolve().parent          # ...\Sign_Language_Translation
 MODEL_PATH = str((BASE_DIR.parent / "models" / "multi_hand_gesture_classifier.tflite").resolve())
 
 interpreter = tf.lite.Interpreter(model_path=MODEL_PATH)
 interpreter.allocate_tensors()
 
-# interpreter = tf.lite.Interpreter(model_path="models/multi_hand_gesture_classifier.tflite")
-# interpreter.allocate_tensors()
-
-
 input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
 
 # =========================
-# 실행
+# 실행 (WebSocket 송신 포함)
 # =========================
-cap = cv2.VideoCapture(0)
 cv2.namedWindow(WINDOW_NAME)
 cv2.setMouseCallback(WINDOW_NAME, _on_mouse)
 
@@ -310,179 +342,212 @@ hold_frames = 0
 cooldownL = 0
 cooldownR = 0
 
-while cap.isOpened():
-    ret, img = cap.read()
-    if not ret:
-        break
+# <<< ADDED: OpenCV 루프를 비동기로 실행하여 WS로 좌표 전송 >>>
+async def _run_with_ws():
+    global y_smooth_L, y_smooth_R, last_center, hold_frames
+    global cooldownL, cooldownR, last_action_draw, last_conf
+    global _trigger_clear, _trigger_newline, seqL, seqR
 
-    img = detector.findHolistic(img, draw=True)
-    # 왼손/오른손
-    _, r_hand = detector.findRighthandLandmark(img)
-    _, l_hand = detector.findLefthandLandmark(img)
+    # websockets.py에 연결 (Origin 헤더는 서버 설정에 맞춰 유지)
+    async with websockets.connect(WS_URI, extra_headers=WS_ORIGIN) as ws:
+        print(f"[WS] connected -> {WS_URI}")
+        cap = cv2.VideoCapture(0)
+        frame_id = 0
 
-    hasL = l_hand is not None
-    hasR = r_hand is not None
+        try:
+            while cap.isOpened():
+                ret, img = cap.read()
+                if not ret:
+                    break
 
-    if hasL or hasR:
-    # --- 손 1개 → 특징 벡터 만들기(0..20 슬롯 사용) ---
-        def _feat_from_hand(hand):
-            if hand is None:
-                return None
-            joint = np.zeros((42, 2), dtype=np.float32)
-            for j, lm in enumerate(hand.landmark):
-                if j < 21:
-                    joint[j] = [lm.x, lm.y]
-            vector, angle_label = Vector_Normalization(joint)
-            return np.concatenate([vector.flatten(), angle_label.flatten()])
+                img = detector.findHolistic(img, draw=True)
+                # 왼손/오른손
+                _, r_hand = detector.findRighthandLandmark(img)
+                _, l_hand = detector.findLefthandLandmark(img)
 
-        # --- 손 중심 이동(흔들림) 측정 → 흔들리면 버퍼 리셋 ---
-        def _center_xy(hand):
-            xs = [lm.x for lm in hand.landmark[:21]]
-            ys = [lm.y for lm in hand.landmark[:21]]
-            return float(np.mean(xs)), float(np.mean(ys))
+                hasL = l_hand is not None
+                hasR = r_hand is not None
 
-        centers = []
-        if hasL: centers.append(_center_xy(l_hand))
-        if hasR: centers.append(_center_xy(r_hand))
-        center_now = None if not centers else tuple(np.mean(centers, axis=0))
+                # === 여기서 좌표를 서버로 전송 ===
+                if hasL or hasR:
+                    await _send_coords(ws, l_hand, r_hand, room_id="debug", frame_id=frame_id)
 
-        if center_now is not None:
-            if last_center is not None:
-                dx = center_now[0] - last_center[0]
-                dy = center_now[1] - last_center[1]
-                dist = (dx*dx + dy*dy)**0.5
-                if dist > MOVE_TH:
-                    hold_frames = 0
-                    stabL.buf.clear(); stabR.buf.clear()
-                else:
-                    hold_frames += 1
-            else:
-                hold_frames = 1
-            last_center = center_now
+                # ---- (아래는 기존 추론/합성/오버레이 로직 그대로 유지) ----
+                if hasL or hasR:
+                    # --- 손 1개 → 특징 벡터 만들기(0..20 슬롯 사용) ---
+                    def _feat_from_hand(hand):
+                        if hand is None:
+                            return None
+                        joint = np.zeros((42, 2), dtype=np.float32)
+                        for j, lm in enumerate(hand.landmark):
+                            if j < 21:
+                                joint[j] = [lm.x, lm.y]
+                        vector, angle_label = Vector_Normalization(joint)
+                        return np.concatenate([vector.flatten(), angle_label.flatten()])
 
-        outs = []  # [(xpos, jamo)]
+                    # --- 손 중심 이동(흔들림) 측정 → 흔들리면 버퍼 리셋 ---
+                    def _center_xy(hand):
+                        xs = [lm.x for lm in hand.landmark[:21]]
+                        ys = [lm.y for lm in hand.landmark[:21]]
+                        return float(np.mean(xs)), float(np.mean(ys))
 
-        # ===== 왼손 추론 (EMA + 홀드 + 쿨다운) =====
-        fL = _feat_from_hand(l_hand)
-        if fL is not None:
-            seqL.append(fL)
-            if len(seqL) >= SEQ_LENGTH:
-                inpL = np.expand_dims(np.array(seqL[-SEQ_LENGTH:], dtype=np.float32), axis=0)
-                interpreter.set_tensor(input_details[0]['index'], inpL)
-                interpreter.invoke()
-                yL_raw = interpreter.get_tensor(output_details[0]['index'])[0]
-                # 확률 스무딩(EMA)
-                if y_smooth_L is None:
-                    y_smooth_L = yL_raw.copy()
-                else:
-                    y_smooth_L = EMA_MOMENTUM * y_smooth_L + (1.0 - EMA_MOMENTUM) * yL_raw
-                iL = int(np.argmax(y_smooth_L)); confL = float(y_smooth_L[iL])
-                last_action_draw, last_conf = ACTIONS[iL], confL  # 디버그 표시
+                    centers = []
+                    if hasL: centers.append(_center_xy(l_hand))
+                    if hasR: centers.append(_center_xy(r_hand))
+                    center_now = None if not centers else tuple(np.mean(centers, axis=0))
 
-                if confL >= CONF_TH and hold_frames >= HOLD_MIN_FR and cooldownL == 0:
-                    actL = ACTIONS[iL]
-                    stL = stabL.push(actL)
-                    if stL is not None:
-                        xL = float(np.mean([lm.x for lm in l_hand.landmark[:21]])) if l_hand else 0.0
-                        outs.append((xL, stL))
-                        cooldownL = COOLDOWN_FR
+                    if center_now is not None:
+                        if last_center is not None:
+                            dx = center_now[0] - last_center[0]
+                            dy = center_now[1] - last_center[1]
+                            dist = (dx*dx + dy*dy)**0.5
+                            if dist > MOVE_TH:
+                                hold_frames = 0
+                                stabL.buf.clear(); stabR.buf.clear()
+                            else:
+                                hold_frames = hold_frames + 1 if isinstance(hold_frames, int) else 1
+                        else:
+                            hold_frames = 1
+                        # NOTE: 파이썬 클로저에서 쓰는 바깥 변수는 nonlocal이 필요할 수 있음.
+                        # 여기서는 단순 사용으로 둡니다.
+                        # last_center를 갱신
+                        # nonlocal last_center
+                        last_center = center_now
 
-        # ===== 오른손 추론 (EMA + 홀드 + 쿨다운) =====
-        fR = _feat_from_hand(r_hand)
-        if fR is not None:
-            seqR.append(fR)
-            if len(seqR) >= SEQ_LENGTH:
-                inpR = np.expand_dims(np.array(seqR[-SEQ_LENGTH:], dtype=np.float32), axis=0)
-                interpreter.set_tensor(input_details[0]['index'], inpR)
-                interpreter.invoke()
-                yR_raw = interpreter.get_tensor(output_details[0]['index'])[0]
-                if y_smooth_R is None:
-                    y_smooth_R = yR_raw.copy()
-                else:
-                    y_smooth_R = EMA_MOMENTUM * y_smooth_R + (1.0 - EMA_MOMENTUM) * yR_raw
-                iR = int(np.argmax(y_smooth_R)); confR = float(y_smooth_R[iR])
-                last_action_draw, last_conf = ACTIONS[iR], confR
+                    outs = []  # [(xpos, jamo)]
 
-                if confR >= CONF_TH and hold_frames >= HOLD_MIN_FR and cooldownR == 0:
-                    actR = ACTIONS[iR]
-                    stR = stabR.push(actR)
-                    if stR is not None:
-                        xR = float(np.mean([lm.x for lm in r_hand.landmark[:21]])) if r_hand else 1.0
-                        outs.append((xR, stR))
-                        cooldownR = COOLDOWN_FR
+                    # ===== 왼손 추론 (EMA + 홀드 + 쿨다운) =====
+                    fL = _feat_from_hand(l_hand)
+                    if fL is not None:
+                        # nonlocal y_smooth_L, cooldownL, last_action_draw, last_conf
+                        seqL.append(fL)
+                        if len(seqL) >= SEQ_LENGTH:
+                            inpL = np.expand_dims(np.array(seqL[-SEQ_LENGTH:], dtype=np.float32), axis=0)
+                            interpreter.set_tensor(input_details[0]['index'], inpL)
+                            interpreter.invoke()
+                            yL_raw = interpreter.get_tensor(output_details[0]['index'])[0]
+                            # 확률 스무딩(EMA)
+                            if y_smooth_L is None:
+                                y_smooth_L = yL_raw.copy()
+                            else:
+                                y_smooth_L = EMA_MOMENTUM * y_smooth_L + (1.0 - EMA_MOMENTUM) * yL_raw
+                            iL = int(np.argmax(y_smooth_L)); confL = float(y_smooth_L[iL])
+                            last_action_draw, last_conf = ACTIONS[iL], confL  # 디버그 표시
 
-        # --- 쿨다운 감소 ---
-        if cooldownL > 0: cooldownL -= 1
-        if cooldownR > 0: cooldownR -= 1
+                            if confL >= CONF_TH and hold_frames >= HOLD_MIN_FR and cooldownL == 0:
+                                actL = ACTIONS[iL]
+                                stL = stabL.push(actL)
+                                if stL is not None:
+                                    xL = float(np.mean([lm.x for lm in l_hand.landmark[:21]])) if l_hand else 0.0
+                                    outs.append((xL, stL))
+                                    cooldownL = COOLDOWN_FR
 
-        # ===== 이번 프레임 확정 출력 적용 =====
-        if outs:
-            outs.sort(key=lambda t: t[0])  # 왼쪽→오른쪽
-            for _, jamo in outs:
-                composer.feed(jamo)
+                    # ===== 오른손 추론 (EMA + 홀드 + 쿨다운) =====
+                    fR = _feat_from_hand(r_hand)
+                    if fR is not None:
+                        # nonlocal y_smooth_R, cooldownR, last_action_draw, last_conf
+                        seqR.append(fR)
+                        if len(seqR) >= SEQ_LENGTH:
+                            inpR = np.expand_dims(np.array(seqR[-SEQ_LENGTH:], dtype=np.float32), axis=0)
+                            interpreter.set_tensor(input_details[0]['index'], inpR)
+                            interpreter.invoke()
+                            yR_raw = interpreter.get_tensor(output_details[0]['index'])[0]
+                            if y_smooth_R is None:
+                                y_smooth_R = yR_raw.copy()
+                            else:
+                                y_smooth_R = EMA_MOMENTUM * y_smooth_R + (1.0 - EMA_MOMENTUM) * yR_raw
+                            iR = int(np.argmax(y_smooth_R)); confR = float(y_smooth_R[iR])
+                            last_action_draw, last_conf = ACTIONS[iR], confR
 
-    # 타임아웃 체크(음절 확정 & 자동 띄어쓰기)
-    composer.maybe_timeout()
+                            if confR >= CONF_TH and hold_frames >= HOLD_MIN_FR and cooldownR == 0:
+                                actR = ACTIONS[iR]
+                                stR = stabR.push(actR)
+                                if stR is not None:
+                                    xR = float(np.mean([lm.x for lm in r_hand.landmark[:21]])) if r_hand else 1.0
+                                    outs.append((xR, stR))
+                                    cooldownR = COOLDOWN_FR
 
-    # =========================
-    # 오버레이: 텍스트 그리기
-    # =========================
-    # preview_block = composer.get_preview_block()
-    # text_line = (composer.get_text() + preview_block)[-SHOW_MAX_CHARS:]
-    preview_block = composer.get_preview_block()
-    joined_text = join_jamos(composer.get_text() + preview_block)   # 자모 → 음절 조합
-    text_line = joined_text[-SHOW_MAX_CHARS:]
-    
-    lines = joined_text.splitlines() or [joined_text]
-    to_draw = '\n'.join(lines[-3:])
+                    # --- 쿨다운 감소 ---
+                    if cooldownL > 0: cooldownL -= 1
+                    if cooldownR > 0: cooldownR -= 1
 
-    img_pil = Image.fromarray(img)
-    draw = ImageDraw.Draw(img_pil)
+                    # ===== 이번 프레임 확정 출력 적용 =====
+                    if outs:
+                        outs.sort(key=lambda t: t[0])  # 왼쪽→오른쪽
+                        for _, jamo in outs:
+                            composer.feed(jamo)
 
-    # 현재 문장(프리뷰 포함)
-    draw.rectangle([(0,0),(img.shape[1],30)], fill=(0,0,0,128))
-    draw.text((10, 10), f"{text_line}", font=font, fill=(255,255,255), spacing=6)
+                # 타임아웃 체크(음절 확정 & 자동 띄어쓰기)
+                composer.maybe_timeout()
 
-    # 디버그: 마지막 확신 자모/신뢰도
-    if last_action_draw:
-        draw.text((10, 45), f"Pred: {last_action_draw} ({last_conf:.2f})", font=font, fill=(90,90,90))
-    
-    draw.rectangle([(BTN_CLEAR[0], BTN_CLEAR[1]), (BTN_CLEAR[2], BTN_CLEAR[3])], fill=(30,30,30))
-    draw.text((BTN_CLEAR[0]+12, BTN_CLEAR[1]+4), "지우기", font=font, fill=(255,255,255))
+                # =========================
+                # 오버레이: 텍스트 그리기
+                # =========================
+                preview_block = composer.get_preview_block()
+                joined_text = join_jamos(composer.get_text() + preview_block)   # 자모 → 음절 조합
+                text_line = joined_text[-SHOW_MAX_CHARS:]
+                
+                lines = joined_text.splitlines() or [joined_text]
+                to_draw = '\n'.join(lines[-3:])
 
-    draw.rectangle([(BTN_NEWLINE[0], BTN_NEWLINE[1]), (BTN_NEWLINE[2], BTN_NEWLINE[3])], fill=(30,30,30))
-    draw.text((BTN_NEWLINE[0]+12, BTN_NEWLINE[1]+4), "줄바꿈", font=font, fill=(255,255,255))
+                img_pil = Image.fromarray(img)
+                draw = ImageDraw.Draw(img_pil)
 
-    img = np.array(img_pil)
+                # 현재 문장(프리뷰 포함)
+                draw.rectangle([(0,0),(img.shape[1],30)], fill=(0,0,0,128))
+                draw.text((10, 10), f"{text_line}", font=font, fill=(255,255,255), spacing=6)
 
-    cv2.imshow('Sign→Korean Compose', img)
-    key = cv2.waitKey(1) & 0xFF
-    # --- 단축키 ---
-    if key == 27:  # ESC
-        break
-    elif key == 8:  # Backspace
-        stabilizer.last_emitted = None
-        composer.backspace()
-    elif key == 32:  # Space -> 공백 커밋
-        composer.commit_block()
-        if not composer.get_text().endswith(' '):
-            composer.text += ' '
-    elif key in (ord('c'), ord('C')):  # Clear
-        stabilizer.last_emitted = None
-        composer.reset_block()
-        composer.text = ""
-    elif key in (ord('n'), ord('N'), 13):  # Newline (Enter 포함)
-        composer.commit_block()
-        composer.text += '\n'
+                # 디버그: 마지막 확신 자모/신뢰도
+                if last_action_draw:
+                    draw.text((10, 45), f"Pred: {last_action_draw} ({last_conf:.2f})", font=font, fill=(90,90,90))
+                
+                draw.rectangle([(BTN_CLEAR[0], BTN_CLEAR[1]), (BTN_CLEAR[2], BTN_CLEAR[3])], fill=(30,30,30))
+                draw.text((BTN_CLEAR[0]+12, BTN_CLEAR[1]+4), "지우기", font=font, fill=(255,255,255))
 
-    # --- 마우스 버튼 트리거 ---
-    if _trigger_clear:
-        stabilizer.last_emitted = None
-        composer.reset_block()
-        composer.text = ""
-        _trigger_clear = False
+                draw.rectangle([(BTN_NEWLINE[0], BTN_NEWLINE[1]), (BTN_NEWLINE[2], BTN_NEWLINE[3])], fill=(30,30,30))
+                draw.text((BTN_NEWLINE[0]+12, BTN_NEWLINE[1]+4), "줄바꿈", font=font, fill=(255,255,255))
 
-    if _trigger_newline:
-        composer.commit_block()
-        composer.text += '\n'
-        _trigger_newline = False
+                img = np.array(img_pil)
+                cv2.imshow(WINDOW_NAME, img)
+
+                key = cv2.waitKey(1) & 0xFF
+                if key == 27:  # ESC
+                    break
+                elif key == 8:  # Backspace
+                    stabilizer.last_emitted = None
+                    composer.backspace()
+                elif key == 32:  # Space -> 공백 커밋
+                    composer.commit_block()
+                    if not composer.get_text().endswith(' '):
+                        composer.text += ' '
+                elif key in (ord('c'), ord('C')):  # Clear
+                    stabilizer.last_emitted = None
+                    composer.reset_block()
+                    composer.text = ""
+                elif key in (ord('n'), ord('N'), 13):  # Newline (Enter 포함)
+                    composer.commit_block()
+                    composer.text += '\n'
+
+                # --- 마우스 버튼 트리거 ---
+                global _trigger_clear, _trigger_newline
+                if _trigger_clear:
+                    stabilizer.last_emitted = None
+                    composer.reset_block()
+                    composer.text = ""
+                    _trigger_clear = False
+
+                if _trigger_newline:
+                    composer.commit_block()
+                    composer.text += '\n'
+                    _trigger_newline = False
+
+                frame_id += 1
+
+        finally:
+            cap.release()
+            cv2.destroyAllWindows()
+# <<< ADDED 끝 >>>
+
+# <<< CHANGED: 엔트리포인트를 asyncio로 실행 >>>
+if __name__ == "__main__":
+    asyncio.run(_run_with_ws())
