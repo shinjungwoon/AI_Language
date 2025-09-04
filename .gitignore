@@ -13,6 +13,7 @@ models/*.onnx
 *.mp4
 *.mov
 *.zip
+!models/*.tflite
 
 # VS Code
 .vscode/
