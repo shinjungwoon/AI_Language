@@ -457,7 +457,7 @@ except Exception:
 
 # ---------- 환경변수 ----------
 WS_URL   = os.getenv("WS_URL", "ws://ai:8001/ai")         # 내부 도커 네트워크 기준
-AI_TOKEN = os.getenv("AI_TOKEN", "change-me-dev") #?
+AI_TOKEN = os.getenv("AI_TOKEN") 
 ROLE     = os.getenv("ROLE", "ai")                        # 워커는 ai
 ROOM     = os.getenv("ROOM", "")                          # 필요시 room 지정(없으면 Hub가 바인딩)
 
