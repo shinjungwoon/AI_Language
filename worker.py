@@ -366,13 +366,13 @@
 #                         continue
 
 #                     hands: List[List[Dict[str, float]]] = data.get("landmarks") or []
-#                     main = hands[0] if hands else []
-#                     if not main:
+#                     __main__ = hands[0] if hands else []
+#                     if not __main__:
 #                         logger.debug("빈 landmarks 수신")
 #                         continue
 
 #                     try:
-#                         result = clf.infer(main)
+#                         result = clf.infer(__main__)
 #                         out = {
 #                             "type": "ai_result",
 #                             "text": result["label"],
@@ -578,13 +578,13 @@ async def run_worker():
 
                     # 서버가 중계한 표준 스키마: hands = [ [ {x,y,z}*21 ], [ ... ] ]
                     hands: List[List[Dict[str, float]]] = data.get("hands") or []  # <<< CHANGED
-                    main = hands[0] if hands else []
-                    if not main:
+                    __main__ = hands[0] if hands else []
+                    if not __main__:
                         logger.debug("빈 landmarks 수신")
                         continue
 
                     try:
-                        result = clf.infer(main)
+                        result = clf.infer(__main__)
                         out = {
                             "type": "ai_result",             # <<< CHANGED (응답 타입 통일)
                             "text": result["label"],
@@ -635,5 +635,5 @@ async def handle_frame(frame_payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"corr_id": corr_id, "text": translated, "score": score}
 
 
-if name == "main":
+if __name__ == "__main__":
     asyncio.run(run_worker())
