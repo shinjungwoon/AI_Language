@@ -3,6 +3,8 @@ import sys
 import asyncio
 import json
 from collections import deque
+import base64
+import shutil
 
 import cv2
 import numpy as np
@@ -27,11 +29,73 @@ SEQ_LEN = int(os.getenv("SEQ_LEN", "10"))
 MIN_CONF = float(os.getenv("MIN_CONFIDENCE", "0.30"))
 ALWAYS_EMIT = os.getenv("ALWAYS_EMIT_CAPTION", "") == "1"
 
+# 모델 저장 관련 설정
+MODEL_DST = os.getenv("TFLITE_PATH", "models/multi_hand_gesture_classifier.tflite")
+TFLITE_SRC = os.getenv("TFLITE_SRC", "")      # 기존 파일 경로가 있으면 여기서 복사
+TFLITE_B64 = os.getenv("TFLITE_B64", "")      # base64로 모델을 넘길 경우
+AI_LANGUAGE_DIR = os.getenv("AI_LANGUAGE_DIR", "/fastapp/AI_Language")
+
 # ws://HOST:PORT/ai?role=client&room=debug(&token=...)
 _qs = [f"role={WS_ROLE}", f"room={WS_ROOM}"]
 if AI_TOKEN:
     _qs.append(f"token={AI_TOKEN}")
 WS_URL = f"ws://{WS_HOST}:{WS_PORT}/ai?{'&'.join(_qs)}"
+
+# =========================
+# 모델 저장 유틸 (주석 유지하되 파일은 준비)
+# =========================
+def ensure_model_saved():
+    """
+    로컬 추론 코드는 주석 상태이지만,
+    나중에 주석 해제 시 바로 사용할 수 있도록 모델 파일을 저장/준비한다.
+    우선순위:
+      1) TFLITE_SRC 경로에서 복사
+      2) TFLITE_B64 디코드 저장
+      3) AI_LANGUAGE_DIR/models/multi_hand_gesture_classifier.tflite 에서 복사
+    """
+    dst = MODEL_DST
+    dst_dir = os.path.dirname(dst) or "."
+    os.makedirs(dst_dir, exist_ok=True)
+
+    if os.path.isfile(dst):
+        print(f"[MODEL] already exists: {dst}")
+        return True
+
+    # 1) TFLITE_SRC 복사
+    if TFLITE_SRC and os.path.isfile(TFLITE_SRC):
+        try:
+            shutil.copy2(TFLITE_SRC, dst)
+            print(f"[MODEL] copied from TFLITE_SRC → {dst}")
+            return True
+        except Exception as e:
+            print(f"[WARN] copy from TFLITE_SRC failed: {e}")
+
+    # 2) TFLITE_B64 디코드 저장
+    if TFLITE_B64:
+        try:
+            blob = base64.b64decode(TFLITE_B64)
+            with open(dst, "wb") as f:
+                f.write(blob)
+            print(f"[MODEL] written from TFLITE_B64 → {dst} (size={len(blob)} bytes)")
+            return True
+        except Exception as e:
+            print(f"[WARN] write from TFLITE_B64 failed: {e}")
+
+    # 3) AI_LANGUAGE_DIR 기본 경로에서 복사
+    default_src = os.path.join(AI_LANGUAGE_DIR, "models", "multi_hand_gesture_classifier.tflite")
+    if os.path.isfile(default_src):
+        try:
+            shutil.copy2(default_src, dst)
+            print(f"[MODEL] copied from AI_LANGUAGE_DIR → {dst}")
+            return True
+        except Exception as e:
+            print(f"[WARN] copy from AI_LANGUAGE_DIR failed: {e}")
+
+    print(f"[WARN] model not prepared. Set TFLITE_SRC or TFLITE_B64 or place file at: {dst}")
+    return False
+
+# 실행 시 한 번 모델 파일 준비 시도
+ensure_model_saved()
 
 # =========================
 # 폰트
@@ -67,7 +131,7 @@ def right_hand_landmarks21(img):
 #  - 원하면 주석 해제하고 로컬 추론도 활성화 가능.
 # =========================
 # import tensorflow as tf
-# interpreter = tf.lite.Interpreter(model_path="models/multi_hand_gesture_classifier.tflite")
+# interpreter = tf.lite.Interpreter(model_path=MODEL_DST)
 # interpreter.allocate_tensors()
 # input_details = interpreter.get_input_details()
 # output_details = interpreter.get_output_details()
